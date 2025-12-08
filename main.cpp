@@ -229,7 +229,7 @@ public:
         }
         
         // Save to file
-        ofstream file("history_" + username + ".txt", ios::app);
+        ofstream file("History_" + username + ".txt", ios::app);
         file << movieId << " " << timestamp;
         file.close();
     }
