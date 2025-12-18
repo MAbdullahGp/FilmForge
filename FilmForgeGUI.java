@@ -1,724 +1,536 @@
 import javax.swing.*;
-import javax.swing.Timer;
+import javax.swing.border.*;
 import java.awt.*;
 import java.awt.event.*;
+import java.awt.image.BufferedImage;
 import java.io.*;
 import java.util.*;
+import java.util.List;
+import javax.imageio.ImageIO;
+import java.net.URL;
 
+// ==========================================
+//  1. C++ BACKEND BRIDGE
+// ==========================================
+class CppBackend {
+    private List<String> runCpp(String... args) {
+        List<String> output = new ArrayList<>();
+        try {
+            List<String> command = new ArrayList<>();
+            command.add("filmforge.exe"); // Make sure this matches your exe name
+            for(String arg : args) command.add(arg);
+            
+            ProcessBuilder pb = new ProcessBuilder(command);
+            Process p = pb.start();
+            BufferedReader reader = new BufferedReader(new InputStreamReader(p.getInputStream()));
+            String line;
+            while ((line = reader.readLine()) != null) output.add(line);
+            p.waitFor();
+        } catch (Exception e) { 
+            System.out.println("Backend Error: filmforge.exe missing.");
+        }
+        return output;
+    }
+
+    private List<MovieData> parse(List<String> lines) {
+        List<MovieData> list = new ArrayList<>();
+        for (String line : lines) {
+            if(line.startsWith("TOP_GENRE:") || line.equals("SUCCESS") || line.equals("FAIL")) continue;
+            try {
+                String[] p = line.split(" ");
+                if (p.length >= 5) {
+                    list.add(new MovieData(Integer.parseInt(p[0]), p[1], p[2], p[3], Integer.parseInt(p[4])));
+                }
+            } catch(Exception e) {}
+        }
+        return list;
+    }
+
+    public boolean login(String u, String p) {
+        List<String> res = runCpp("login", u, p);
+        return !res.isEmpty() && res.get(0).trim().equals("SUCCESS");
+    }
+    public boolean register(String u, String p) {
+        List<String> res = runCpp("register", u, p);
+        return !res.isEmpty() && res.get(0).trim().equals("SUCCESS");
+    }
+    public List<MovieData> getAllMovies() { return parse(runCpp("load_all")); }
+    public List<MovieData> getTrending() { return parse(runCpp("trending")); }
+    public List<MovieData> getSortedByViews() { return parse(runCpp("sort_views")); }
+    public List<MovieData> getSortedByName() { return parse(runCpp("sort_name")); }
+    public List<MovieData> searchMovies(String query) { return parse(runCpp("search", query)); }
+    public List<MovieData> getHistory(String user) { return parse(runCpp("history", user)); }
+
+    public Map<String, Object> getSuggestions(String user) {
+        List<String> raw = runCpp("recommend", user);
+        String genre = "None";
+        List<MovieData> recs = new ArrayList<>();
+        for(String line : raw) {
+            if(line.startsWith("TOP_GENRE:")) {
+                String[] parts = line.split(":");
+                if(parts.length > 1) genre = parts[1];
+            } else {
+                try {
+                    String[] p = line.split(" ");
+                    if(p.length >= 5) recs.add(new MovieData(Integer.parseInt(p[0]), p[1], p[2], p[3], Integer.parseInt(p[4])));
+                } catch(Exception e) {}
+            }
+        }
+        Map<String, Object> res = new HashMap<>();
+        res.put("genre", genre); res.put("list", recs);
+        return res;
+    }
+}
+
+class MovieData {
+    int id; String title; String genre; String path; int views;
+    MovieData(int i, String t, String g, String p, int v) {id=i;title=t;genre=g;path=p;views=v;}
+}
+
+// ==========================================
+//  2. GUI CLASS (NETFLIX PAGING SYSTEM)
+// ==========================================
 public class FilmForgeGUI extends JFrame {
-    private Process cppProcess;
-    private BufferedWriter toBackend;
-    private BufferedReader fromBackend;
-    private String currentUser = null;
+
+    private CppBackend backend = new CppBackend();
+    private String currentUser = "Guest";
+
+    // --- STYLING ---
+    private static final Color BG_DARK = new Color(18, 18, 18);
+    private static final Color BG_SIDEBAR = new Color(10, 10, 10);
+    private static final Color BG_CARD = new Color(40, 40, 40);
+    private static final Color ACCENT_RED = new Color(229, 9, 20); 
+    private static final Color HOVER_RED = new Color(180, 0, 0);  
+    private static final Color TEXT_PRIMARY = new Color(255, 255, 255);
+    private static final Color TEXT_SECONDARY = new Color(180, 180, 180);
+    private static final Color TEXT_GRAY = new Color(150, 150, 150);
+
+    private static final Font FONT_TITLE = new Font("Segoe UI", Font.BOLD, 32); 
+    private static final Font FONT_HEADER = new Font("Segoe UI", Font.BOLD, 22); 
+    private static final Font FONT_CARD_TITLE = new Font("Segoe UI", Font.BOLD, 14);
+    private static final Font FONT_REGULAR = new Font("Segoe UI", Font.PLAIN, 12);
+    private static final Font FONT_BUTTON = new Font("Segoe UI", Font.BOLD, 16); 
     
-    // GUI Components
-    private CardLayout cardLayout;
-    private JPanel mainPanel;
+    private static final String DUMMY_VIDEO_PATH = "video.mp4"; 
+
+    // Components
+    private CardLayout parentCardLayout = new CardLayout();
+    private JPanel parentPanel = new JPanel(parentCardLayout);
+    private CardLayout contentCardLayout = new CardLayout();
+    private JPanel contentPanel = new JPanel(contentCardLayout);
     
+    // Main Container
+    private JPanel homeContainer = new JPanel();
+    private JScrollPane mainScrollPane;
+
+    private JTextField topSearchBar;
+    private JComboBox<String> sortDropdown; 
+    private JPanel profilePanel; 
+
     public FilmForgeGUI() {
-        setTitle("FILMFORGE - Movie Streaming Platform");
-        setSize(1000, 700);
+        setTitle("FilmForge - Ultimate Cinema");
+        setExtendedState(JFrame.MAXIMIZED_BOTH);
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
-        setLocationRelativeTo(null);
         
-        // Initialize C++ Backend Connection
-        if(!initBackend()) {
-            return;
-        }
-        
-        // Setup GUI
-        cardLayout = new CardLayout();
-        mainPanel = new JPanel(cardLayout);
-        
-        mainPanel.add(createLoginPanel(), "LOGIN");
-        mainPanel.add(createRegisterPanel(), "REGISTER");
-        mainPanel.add(createDashboardPanel(), "DASHBOARD");
-        
-        add(mainPanel);
-        cardLayout.show(mainPanel, "LOGIN");
-        
+        homeContainer.setLayout(new BoxLayout(homeContainer, BoxLayout.Y_AXIS));
+        homeContainer.setBackground(BG_DARK);
+
+        initLoginScreen();
+        initIntroScreen();
+        initDashboardScreen();
+
+        add(parentPanel);
+        parentCardLayout.show(parentPanel, "LOGIN");
         setVisible(true);
-        
-        // Cleanup on exit
-        addWindowListener(new WindowAdapter() {
-            public void windowClosing(WindowEvent e) {
-                cleanup();
+    }
+
+    // --- UTILS ---
+    private void styleRedButton(JButton btn) {
+        btn.setBackground(ACCENT_RED);
+        btn.setForeground(Color.WHITE);
+        btn.setFont(FONT_BUTTON);
+        btn.setFocusPainted(false);
+        btn.setBorderPainted(false);
+        btn.setCursor(new Cursor(Cursor.HAND_CURSOR));
+        btn.setOpaque(true);
+        btn.addMouseListener(new MouseAdapter() {
+            public void mouseEntered(MouseEvent e) { btn.setBackground(HOVER_RED); }
+            public void mouseExited(MouseEvent e) { btn.setBackground(ACCENT_RED); }
+        });
+    }
+
+    private void styleModernSearchBar(JTextField field) {
+        field.setBackground(new Color(45, 45, 45)); 
+        field.setForeground(Color.GRAY);
+        field.setText("Search Movies...");
+        field.setCaretColor(Color.WHITE);
+        field.setFont(new Font("Segoe UI", Font.PLAIN, 16));
+        field.setBorder(new CompoundBorder(new LineBorder(new Color(80, 80, 80), 1, true), new EmptyBorder(8, 15, 8, 15)));
+        field.addFocusListener(new FocusAdapter() {
+            public void focusGained(FocusEvent e) {
+                if(field.getText().equals("Search Movies...")) { field.setText(""); field.setForeground(Color.WHITE); }
+                field.setBorder(new CompoundBorder(new LineBorder(ACCENT_RED, 2, true), new EmptyBorder(8, 15, 8, 15)));
+            }
+            public void focusLost(FocusEvent e) {
+                if(field.getText().isEmpty()) { field.setText("Search Movies..."); field.setForeground(Color.GRAY); }
+                field.setBorder(new CompoundBorder(new LineBorder(new Color(80, 80, 80), 1, true), new EmptyBorder(8, 15, 8, 15)));
             }
         });
     }
-    
-    private boolean initBackend() {
-        try {
-            // Try Windows executable first
-            File exeFile = new File("filmforge.exe");
-            File unixFile = new File("filmforge");
-            
-            ProcessBuilder pb;
-            if(exeFile.exists()) {
-                pb = new ProcessBuilder("filmforge.exe");
-            } else if(unixFile.exists()) {
-                pb = new ProcessBuilder("./filmforge");
-            } else {
-                JOptionPane.showMessageDialog(this, 
-                    "Error: Backend executable not found!\n\n" +
-                    "Please compile the C++ code first:\n" +
-                    "Windows: g++ main.cpp -o filmforge.exe\n" +
-                    "Linux/Mac: g++ main.cpp -o filmforge\n\n" +
-                    "Make sure the executable is in the same folder as this Java file.",
-                    "Backend Error", JOptionPane.ERROR_MESSAGE);
-                System.exit(1);
-                return false;
-            }
-            
-            pb.redirectErrorStream(true);
-            cppProcess = pb.start();
-            
-            toBackend = new BufferedWriter(new OutputStreamWriter(cppProcess.getOutputStream()));
-            fromBackend = new BufferedReader(new InputStreamReader(cppProcess.getInputStream()));
-            
-            // Test connection
-            Thread.sleep(500); // Give backend time to start
-            
-            System.out.println("Backend connected successfully!");
-            return true;
-            
-        } catch(IOException e) {
-            JOptionPane.showMessageDialog(this, 
-                "Error: Cannot start backend process.\n" +
-                "Error: " + e.getMessage(),
-                "Backend Error", JOptionPane.ERROR_MESSAGE);
-            e.printStackTrace();
-            System.exit(1);
-            return false;
-        } catch(InterruptedException e) {
-            e.printStackTrace();
-            return false;
-        }
-    }
-    
-    private String sendCommand(String command) {
-        try {
-            System.out.println("Sending: " + command); // Debug
-            toBackend.write(command + "\n");
-            toBackend.flush();
-            
-            String response = fromBackend.readLine();
-            System.out.println("Received: " + response); // Debug
-            
-            return response;
-        } catch(IOException e) {
-            System.err.println("Communication error: " + e.getMessage());
-            e.printStackTrace();
-            return "ERROR:Communication error - " + e.getMessage();
-        }
-    }
-    
-    // =================== LOGIN PANEL ===================
-    private JPanel createLoginPanel() {
-        JPanel panel = new JPanel(new GridBagLayout());
-        panel.setBackground(new Color(20, 20, 20));
-        GridBagConstraints gbc = new GridBagConstraints();
-        gbc.insets = new Insets(10, 10, 10, 10);
-        
-        // Title
-        JLabel titleLabel = new JLabel("FILMFORGE");
-        titleLabel.setFont(new Font("Arial", Font.BOLD, 48));
-        titleLabel.setForeground(new Color(229, 9, 20));
-        gbc.gridx = 0; gbc.gridy = 0; gbc.gridwidth = 2;
-        panel.add(titleLabel, gbc);
-        
-        // Username
-        gbc.gridwidth = 1; gbc.gridy = 1;
-        JLabel userLabel = new JLabel("Username:");
-        userLabel.setForeground(Color.WHITE);
-        userLabel.setFont(new Font("Arial", Font.PLAIN, 16));
-        panel.add(userLabel, gbc);
-        
-        gbc.gridx = 1;
-        JTextField userField = new JTextField(20);
-        userField.setFont(new Font("Arial", Font.PLAIN, 14));
-        panel.add(userField, gbc);
-        
-        // Password
-        gbc.gridx = 0; gbc.gridy = 2;
-        JLabel passLabel = new JLabel("Password:");
-        passLabel.setForeground(Color.WHITE);
-        passLabel.setFont(new Font("Arial", Font.PLAIN, 16));
-        panel.add(passLabel, gbc);
-        
-        gbc.gridx = 1;
-        JPasswordField passField = new JPasswordField(20);
-        passField.setFont(new Font("Arial", Font.PLAIN, 14));
-        panel.add(passField, gbc);
-        
-        // Status label for feedback
-        gbc.gridx = 0; gbc.gridy = 3; gbc.gridwidth = 2;
-        JLabel statusLabel = new JLabel(" ");
-        statusLabel.setForeground(Color.RED);
-        statusLabel.setFont(new Font("Arial", Font.PLAIN, 12));
-        panel.add(statusLabel, gbc);
-        
-        // Login Button
-        gbc.gridy = 4;
-        JButton loginBtn = new JButton("LOGIN");
-        loginBtn.setBackground(new Color(229, 9, 20));
-        loginBtn.setForeground(Color.WHITE);
-        loginBtn.setFont(new Font("Arial", Font.BOLD, 16));
-        loginBtn.setFocusPainted(false);
+
+    // --- SCREENS ---
+    private void initLoginScreen() {
+        JPanel p = new JPanel(new GridBagLayout()); p.setBackground(BG_DARK);
+        JLabel l = new JLabel("FILM FORGE"); l.setFont(new Font("Segoe UI", Font.BOLD, 50)); l.setForeground(ACCENT_RED);
+        JTextField u = new JTextField(20); styleField(u);
+        JPasswordField pass = new JPasswordField(20); styleField(pass);
+        JButton loginBtn = new JButton("LOGIN"); styleRedButton(loginBtn);
+        JButton regBtn = new JButton("REGISTER"); regBtn.setBackground(BG_CARD); regBtn.setForeground(Color.WHITE);
+
+        GridBagConstraints g = new GridBagConstraints(); g.insets = new Insets(10,10,10,10);
+        g.gridx=0; g.gridy=0; g.gridwidth=2; p.add(l, g);
+        g.gridy=1; p.add(createLabeledField("Username", u), g);
+        g.gridy=2; p.add(createLabeledField("Password", pass), g);
+        g.gridy=3; g.gridwidth=1; p.add(loginBtn, g);
+        g.gridx=1; p.add(regBtn, g);
+
         loginBtn.addActionListener(e -> {
-            String username = userField.getText().trim();
-            String password = new String(passField.getPassword()).trim();
-            
-            if(username.isEmpty() || password.isEmpty()) {
-                statusLabel.setText("Please enter both username and password!");
-                statusLabel.setForeground(Color.RED);
-                return;
-            }
-            
-            statusLabel.setText("Logging in...");
-            statusLabel.setForeground(Color.YELLOW);
-            
-            String response = sendCommand("LOGIN " + username + " " + password);
-            
-            if(response != null && response.startsWith("SUCCESS")) {
-                currentUser = username;
-                statusLabel.setText("Success! Loading dashboard...");
-                statusLabel.setForeground(Color.GREEN);
-                
-                // Clear fields
-                userField.setText("");
-                passField.setText("");
-                
-                // Update dashboard and switch immediately
-                SwingUtilities.invokeLater(() -> {
-                    loadDashboard();
-                    cardLayout.show(mainPanel, "DASHBOARD");
-                });
-            } else {
-                statusLabel.setText("Invalid username or password!");
-                statusLabel.setForeground(Color.RED);
-                System.err.println("Login failed. Response: " + response);
-            }
+            if(backend.login(u.getText(), new String(pass.getPassword()))) {
+                currentUser = u.getText();
+                updateProfileDisplay();
+                playIntroAndRedirect();
+            } else JOptionPane.showMessageDialog(this, "Invalid Credentials!");
         });
-        panel.add(loginBtn, gbc);
-        
-        // Register Link
-        gbc.gridy = 5;
-        JButton registerLink = new JButton("New User? Register Here");
-        registerLink.setForeground(new Color(100, 149, 237));
-        registerLink.setContentAreaFilled(false);
-        registerLink.setBorderPainted(false);
-        registerLink.setFont(new Font("Arial", Font.PLAIN, 12));
-        registerLink.addActionListener(e -> {
-            statusLabel.setText(" ");
-            cardLayout.show(mainPanel, "REGISTER");
+
+        regBtn.addActionListener(e -> {
+             if(backend.register(u.getText(), new String(pass.getPassword()))) JOptionPane.showMessageDialog(this, "Registered!");
+             else JOptionPane.showMessageDialog(this, "User Exists!");
         });
-        panel.add(registerLink, gbc);
-        
-        // Add Enter key support
-        ActionListener loginAction = e -> loginBtn.doClick();
-        userField.addActionListener(loginAction);
-        passField.addActionListener(loginAction);
-        
-        return panel;
+        parentPanel.add(p, "LOGIN");
     }
-    
-    // =================== REGISTER PANEL ===================
-    private JPanel createRegisterPanel() {
-        JPanel panel = new JPanel(new GridBagLayout());
-        panel.setBackground(new Color(20, 20, 20));
-        GridBagConstraints gbc = new GridBagConstraints();
-        gbc.insets = new Insets(10, 10, 10, 10);
-        
-        // Title
-        JLabel titleLabel = new JLabel("Create Account");
-        titleLabel.setFont(new Font("Arial", Font.BOLD, 36));
-        titleLabel.setForeground(new Color(229, 9, 20));
-        gbc.gridx = 0; gbc.gridy = 0; gbc.gridwidth = 2;
-        panel.add(titleLabel, gbc);
-        
-        // Username
-        gbc.gridwidth = 1; gbc.gridy = 1;
-        JLabel userLabel = new JLabel("Username:");
-        userLabel.setForeground(Color.WHITE);
-        userLabel.setFont(new Font("Arial", Font.PLAIN, 16));
-        panel.add(userLabel, gbc);
-        
-        gbc.gridx = 1;
-        JTextField userField = new JTextField(20);
-        userField.setFont(new Font("Arial", Font.PLAIN, 14));
-        panel.add(userField, gbc);
-        
-        // Password
-        gbc.gridx = 0; gbc.gridy = 2;
-        JLabel passLabel = new JLabel("Password:");
-        passLabel.setForeground(Color.WHITE);
-        passLabel.setFont(new Font("Arial", Font.PLAIN, 16));
-        panel.add(passLabel, gbc);
-        
-        gbc.gridx = 1;
-        JPasswordField passField = new JPasswordField(20);
-        passField.setFont(new Font("Arial", Font.PLAIN, 14));
-        panel.add(passField, gbc);
-        
-        // Status label
-        gbc.gridx = 0; gbc.gridy = 3; gbc.gridwidth = 2;
-        JLabel statusLabel = new JLabel(" ");
-        statusLabel.setFont(new Font("Arial", Font.PLAIN, 12));
-        panel.add(statusLabel, gbc);
-        
-        // Register Button
-        gbc.gridy = 4;
-        JButton registerBtn = new JButton("REGISTER");
-        registerBtn.setBackground(new Color(229, 9, 20));
-        registerBtn.setForeground(Color.WHITE);
-        registerBtn.setFont(new Font("Arial", Font.BOLD, 16));
-        registerBtn.setFocusPainted(false);
-        registerBtn.addActionListener(e -> {
-            String username = userField.getText().trim();
-            String password = new String(passField.getPassword()).trim();
-            
-            if(username.isEmpty() || password.isEmpty()) {
-                statusLabel.setText("Please fill all fields!");
-                statusLabel.setForeground(Color.RED);
-                return;
-            }
-            
-            if(username.contains(" ") || password.contains(" ")) {
-                statusLabel.setText("Username and password cannot contain spaces!");
-                statusLabel.setForeground(Color.RED);
-                return;
-            }
-            
-            statusLabel.setText("Registering...");
-            statusLabel.setForeground(Color.YELLOW);
-            
-            String response = sendCommand("REGISTER " + username + " " + password);
-            
-            if(response != null && response.startsWith("SUCCESS")) {
-                statusLabel.setText("Registration successful!");
-                statusLabel.setForeground(Color.GREEN);
-                
-                JOptionPane.showMessageDialog(this, 
-                    "Registration successful!\nYou can now login with your credentials.", 
-                    "Success", JOptionPane.INFORMATION_MESSAGE);
-                
-                userField.setText("");
-                passField.setText("");
-                statusLabel.setText(" ");
-                cardLayout.show(mainPanel, "LOGIN");
-            } else {
-                statusLabel.setText("Username already exists!");
-                statusLabel.setForeground(Color.RED);
-            }
+
+    private void playIntroAndRedirect() {
+        parentCardLayout.show(parentPanel, "INTRO");
+        javax.swing.Timer t = new javax.swing.Timer(3000, e -> {
+            refreshView(backend.getAllMovies(), true); 
+            parentCardLayout.show(parentPanel, "DASHBOARD");
         });
-        panel.add(registerBtn, gbc);
-        
-        // Back to Login
-        gbc.gridy = 5;
-        JButton backBtn = new JButton("Back to Login");
-        backBtn.setForeground(new Color(100, 149, 237));
-        backBtn.setContentAreaFilled(false);
-        backBtn.setBorderPainted(false);
-        backBtn.setFont(new Font("Arial", Font.PLAIN, 12));
-        backBtn.addActionListener(e -> {
-            statusLabel.setText(" ");
-            userField.setText("");
-            passField.setText("");
-            cardLayout.show(mainPanel, "LOGIN");
-        });
-        panel.add(backBtn, gbc);
-        
-        return panel;
+        t.setRepeats(false); t.start();
     }
-    
-    // =================== DASHBOARD PANEL ===================
-    private JPanel createDashboardPanel() {
-        JPanel panel = new JPanel(new BorderLayout());
-        panel.setBackground(new Color(20, 20, 20));
-        
-        // Top Bar
-        JPanel topBar = new JPanel(new BorderLayout());
-        topBar.setBackground(new Color(229, 9, 20));
-        topBar.setPreferredSize(new Dimension(0, 60));
-        
-        JLabel logo = new JLabel("  FILMFORGE");
-        logo.setFont(new Font("Arial", Font.BOLD, 24));
-        logo.setForeground(Color.WHITE);
-        topBar.add(logo, BorderLayout.WEST);
-        
-        JPanel userPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT));
-        userPanel.setBackground(new Color(229, 9, 20));
-        JLabel userLabel = new JLabel("Welcome, " + (currentUser != null ? currentUser : "User") + "  ");
-        userLabel.setForeground(Color.WHITE);
-        userLabel.setFont(new Font("Arial", Font.PLAIN, 14));
-        userPanel.add(userLabel);
-        
-        JButton logoutBtn = new JButton("Logout");
-        logoutBtn.setBackground(Color.WHITE);
-        logoutBtn.setForeground(new Color(229, 9, 20));
-        logoutBtn.addActionListener(e -> {
-            currentUser = null;
-            cardLayout.show(mainPanel, "LOGIN");
-        });
-        userPanel.add(logoutBtn);
-        topBar.add(userPanel, BorderLayout.EAST);
-        
-        panel.add(topBar, BorderLayout.NORTH);
-        
-        // Main Content Area
-        JTabbedPane tabbedPane = new JTabbedPane();
-        tabbedPane.setBackground(new Color(20, 20, 20));
-        tabbedPane.setForeground(Color.WHITE);
-        tabbedPane.setFont(new Font("Arial", Font.BOLD, 14));
-        
-        tabbedPane.addTab("All Movies", createAllMoviesPanel());
-        tabbedPane.addTab("Trending", createTrendingPanel());
-        tabbedPane.addTab("Search", createSearchPanel());
-        tabbedPane.addTab("My History", createHistoryPanel());
-        tabbedPane.addTab("Recommendations", createRecommendationsPanel());
-        
-        panel.add(tabbedPane, BorderLayout.CENTER);
-        
-        return panel;
+
+    private void initIntroScreen() {
+        JPanel p = new JPanel(new BorderLayout()); p.setBackground(Color.BLACK);
+        ImageIcon icon = new ImageIcon("intro.gif");
+        JLabel l = new JLabel(icon); 
+        p.add(l, BorderLayout.CENTER); parentPanel.add(p, "INTRO");
     }
-    
-    private void loadDashboard() {
-        try {
-            // Remove old dashboard if exists
-            Component[] components = mainPanel.getComponents();
-            for (int i = 0; i < components.length; i++) {
-                if (i == 2) {  // Dashboard is at index 2
-                    mainPanel.remove(i);
-                    break;
+
+    private void initDashboardScreen() {
+        JPanel dashboard = new JPanel(new BorderLayout());
+        
+        // SIDEBAR
+        JPanel sidebar = new JPanel(); sidebar.setLayout(new BoxLayout(sidebar, BoxLayout.Y_AXIS));
+        sidebar.setBackground(BG_SIDEBAR); sidebar.setPreferredSize(new Dimension(280, 0));
+        sidebar.setBorder(new EmptyBorder(30, 15, 30, 15));
+
+        JLabel logo = new JLabel("FILM FORGE"); logo.setFont(new Font("Segoe UI", Font.BOLD, 32)); logo.setForeground(ACCENT_RED);
+        logo.setAlignmentX(Component.CENTER_ALIGNMENT);
+        sidebar.add(logo); sidebar.add(Box.createRigidArea(new Dimension(0, 50)));
+        
+        JButton b1 = sideBtn("All Movies");
+        JButton b2 = sideBtn("Trending");
+        JButton b3 = sideBtn("History");
+        JButton b4 = sideBtn("Suggestions");
+        JButton bOut = new JButton("LOGOUT"); styleRedButton(bOut);
+        bOut.setMaximumSize(new Dimension(250, 50)); bOut.setAlignmentX(Component.CENTER_ALIGNMENT);
+
+        sidebar.add(b1); sidebar.add(Box.createVerticalStrut(20));
+        sidebar.add(b2); sidebar.add(Box.createVerticalStrut(20));
+        sidebar.add(b3); sidebar.add(Box.createVerticalStrut(20));
+        sidebar.add(b4); sidebar.add(Box.createVerticalGlue());
+        sidebar.add(bOut);
+
+        // TOP BAR
+        JPanel top = new JPanel(new BorderLayout()); top.setBackground(BG_DARK);
+        top.setBorder(new CompoundBorder(BorderFactory.createMatteBorder(0,0,1,0,new Color(50,50,50)), new EmptyBorder(15,30,15,30)));
+        
+        JPanel centerP = new JPanel(new FlowLayout(FlowLayout.CENTER)); centerP.setBackground(BG_DARK);
+        topSearchBar = new JTextField(35); styleModernSearchBar(topSearchBar);
+        JButton searchBtn = new JButton("\u279C"); styleRedButton(searchBtn); searchBtn.setPreferredSize(new Dimension(50, 40));
+        
+        String[] sorts = {"Sort: Default", "Most Viewed", "Name (A-Z)"};
+        sortDropdown = new JComboBox<>(sorts);
+        sortDropdown.setBackground(BG_CARD); sortDropdown.setForeground(Color.WHITE);
+        
+        centerP.add(topSearchBar); centerP.add(searchBtn); centerP.add(sortDropdown);
+        profilePanel = new JPanel(new FlowLayout(FlowLayout.RIGHT)); profilePanel.setBackground(BG_DARK);
+        updateProfileDisplay();
+
+        top.add(centerP, BorderLayout.CENTER); top.add(profilePanel, BorderLayout.EAST);
+
+        // CONTENT
+        mainScrollPane = new JScrollPane(homeContainer);
+        mainScrollPane.setBorder(null);
+        mainScrollPane.getVerticalScrollBar().setUnitIncrement(16);
+        contentPanel.add(mainScrollPane, "HOME");
+
+        dashboard.add(sidebar, BorderLayout.WEST);
+        dashboard.add(top, BorderLayout.NORTH);
+        dashboard.add(contentPanel, BorderLayout.CENTER);
+
+        // Listeners
+        b1.addActionListener(e -> refreshView(backend.getAllMovies(), true));
+        b2.addActionListener(e -> refreshView(backend.getTrending(), false));
+        b3.addActionListener(e -> refreshView(backend.getHistory(currentUser), false));
+        b4.addActionListener(e -> loadSuggestions());
+
+        ActionListener searchAction = e -> {
+            String q = topSearchBar.getText();
+            if(!q.isEmpty() && !q.equals("Search Movies...")) refreshView(backend.searchMovies(q), false);
+            else {
+                int s = sortDropdown.getSelectedIndex();
+                if(s==1) refreshView(backend.getSortedByViews(), false);
+                else if(s==2) refreshView(backend.getSortedByName(), false);
+                else refreshView(backend.getAllMovies(), true);
+            }
+        };
+        searchBtn.addActionListener(searchAction);
+        topSearchBar.addActionListener(searchAction);
+        sortDropdown.addActionListener(searchAction);
+
+        bOut.addActionListener(e -> parentCardLayout.show(parentPanel, "LOGIN"));
+        parentPanel.add(dashboard, "DASHBOARD");
+    }
+
+    // --- DISPLAY LOGIC ---
+    private void refreshView(List<MovieData> movies, boolean categorize) {
+        homeContainer.removeAll();
+        
+        if (categorize) {
+            Set<String> genres = new LinkedHashSet<>();
+            for(MovieData m : movies) genres.add(m.genre);
+            
+            for(String genre : genres) {
+                // FIXED: Manually filter without stream collectors to be safe
+                List<MovieData> genreMovies = new ArrayList<>();
+                for(MovieData m : movies) {
+                    if(m.genre.equals(genre)) genreMovies.add(m);
+                }
+                
+                if(!genreMovies.isEmpty()) {
+                    // USE PAGINATED ROW (No Scrollbar)
+                    CategoryPagingRow row = new CategoryPagingRow(genre, genreMovies);
+                    homeContainer.add(row);
+                    homeContainer.add(Box.createVerticalStrut(10));
                 }
             }
+        } else {
+            // GRID VIEW
+            JLabel title = new JLabel("  Results");
+            title.setFont(FONT_HEADER); title.setForeground(TEXT_PRIMARY);
+            title.setAlignmentX(Component.LEFT_ALIGNMENT);
+            homeContainer.add(Box.createVerticalStrut(20)); homeContainer.add(title); homeContainer.add(Box.createVerticalStrut(10));
             
-            // Add fresh dashboard
-            JPanel newDashboard = createDashboardPanel();
-            mainPanel.add(newDashboard, "DASHBOARD");
+            JPanel grid = new JPanel(new GridLayout(0, 5, 20, 20));
+            grid.setBackground(BG_DARK);
+            grid.setAlignmentX(Component.LEFT_ALIGNMENT);
+            for(MovieData m : movies) grid.add(createVerticalMovieCard(m));
             
-            // Force update
-            mainPanel.revalidate();
-            mainPanel.repaint();
-            
-            System.out.println("Dashboard loaded for user: " + currentUser);
-        } catch(Exception e) {
-            System.err.println("Error loading dashboard: " + e.getMessage());
-            e.printStackTrace();
-        }
-    }
-    
-    private JPanel createAllMoviesPanel() {
-        JPanel panel = new JPanel(new BorderLayout());
-        panel.setBackground(new Color(20, 20, 20));
-        
-        JPanel moviesPanel = new JPanel(new GridLayout(0, 2, 15, 15));
-        moviesPanel.setBackground(new Color(20, 20, 20));
-        
-        String response = sendCommand("ALLMOIVES");
-        if(response != null && response.startsWith("ALLMOVIES:")) {
-            String data = response.substring(10);
-            String[] movies = data.split("\\|");
-            
-            for(String movie : movies) {
-                String[] parts = movie.split(",");
-                if(parts.length >= 5) {
-                    moviesPanel.add(createMovieCard(parts[0], parts[1], parts[2], parts[3], parts[4]));
-                }
-            }
+            homeContainer.add(grid);
         }
         
-        JScrollPane scrollPane = new JScrollPane(moviesPanel);
-        scrollPane.getViewport().setBackground(new Color(20, 20, 20));
-        panel.add(scrollPane, BorderLayout.CENTER);
-        
-        return panel;
+        homeContainer.revalidate(); homeContainer.repaint();
     }
-    
-    private JPanel createMovieCard(String id, String title, String genre, String year, String rating) {
-        JPanel card = new JPanel(new BorderLayout(10, 10));
-        card.setBackground(new Color(40, 40, 40));
-        card.setBorder(BorderFactory.createLineBorder(new Color(229, 9, 20), 2));
-        card.setPreferredSize(new Dimension(400, 150));
-        
-        JPanel infoPanel = new JPanel(new GridLayout(4, 1));
-        infoPanel.setBackground(new Color(40, 40, 40));
-        
-        JLabel titleLabel = new JLabel(" " + title);
-        titleLabel.setFont(new Font("Arial", Font.BOLD, 18));
-        titleLabel.setForeground(Color.WHITE);
-        
-        JLabel genreLabel = new JLabel(" Genre: " + genre);
-        genreLabel.setForeground(Color.LIGHT_GRAY);
-        
-        JLabel yearLabel = new JLabel(" Year: " + year);
-        yearLabel.setForeground(Color.LIGHT_GRAY);
-        
-        JLabel ratingLabel = new JLabel(" Rating: " + rating + " ⭐");
-        ratingLabel.setForeground(new Color(255, 215, 0));
-        
-        infoPanel.add(titleLabel);
-        infoPanel.add(genreLabel);
-        infoPanel.add(yearLabel);
-        infoPanel.add(ratingLabel);
-        
-        card.add(infoPanel, BorderLayout.CENTER);
-        
-        JButton watchBtn = new JButton("Watch Now");
-        watchBtn.setBackground(new Color(229, 9, 20));
-        watchBtn.setForeground(Color.WHITE);
-        watchBtn.addActionListener(e -> {
-            sendCommand("ADDHISTORY " + currentUser + " " + id);
-            JOptionPane.showMessageDialog(this, "Now playing: " + title, "Playing", JOptionPane.INFORMATION_MESSAGE);
-        });
-        card.add(watchBtn, BorderLayout.SOUTH);
-        
-        return card;
-    }
-    
-    private JPanel createTrendingPanel() {
-        JPanel panel = new JPanel(new BorderLayout());
-        panel.setBackground(new Color(20, 20, 20));
-        
-        JLabel header = new JLabel("  🔥 Trending Now");
-        header.setFont(new Font("Arial", Font.BOLD, 24));
-        header.setForeground(new Color(229, 9, 20));
-        panel.add(header, BorderLayout.NORTH);
-        
-        JPanel trendingPanel = new JPanel(new GridLayout(0, 1, 10, 10));
-        trendingPanel.setBackground(new Color(20, 20, 20));
-        
-        String response = sendCommand("TRENDING 5");
-        if(response != null && response.startsWith("TRENDING:")) {
-            String data = response.substring(9);
-            String[] movies = data.split("\\|");
-            
-            for(int i = 0; i < movies.length; i++) {
-                String[] parts = movies[i].split(",");
-                if(parts.length >= 3) {
-                    JPanel item = new JPanel(new FlowLayout(FlowLayout.LEFT));
-                    item.setBackground(new Color(40, 40, 40));
-                    item.setBorder(BorderFactory.createLineBorder(new Color(229, 9, 20), 2));
-                    
-                    JLabel rank = new JLabel(" #" + (i+1) + " ");
-                    rank.setFont(new Font("Arial", Font.BOLD, 20));
-                    rank.setForeground(new Color(255, 215, 0));
-                    
-                    JLabel titleLabel = new JLabel(parts[1] + " - " + parts[2] + " views");
-                    titleLabel.setFont(new Font("Arial", Font.PLAIN, 16));
-                    titleLabel.setForeground(Color.WHITE);
-                    
-                    item.add(rank);
-                    item.add(titleLabel);
-                    trendingPanel.add(item);
-                }
-            }
-        }
-        
-        JScrollPane scrollPane = new JScrollPane(trendingPanel);
-        scrollPane.getViewport().setBackground(new Color(20, 20, 20));
-        panel.add(scrollPane, BorderLayout.CENTER);
-        
-        return panel;
-    }
-    
-    private JPanel createSearchPanel() {
-        JPanel panel = new JPanel(new BorderLayout(10, 10));
-        panel.setBackground(new Color(20, 20, 20));
-        
-        // Search Bar
-        JPanel searchBar = new JPanel(new FlowLayout());
-        searchBar.setBackground(new Color(20, 20, 20));
-        
-        JLabel searchLabel = new JLabel("Search by ID:");
-        searchLabel.setForeground(Color.WHITE);
-        searchLabel.setFont(new Font("Arial", Font.PLAIN, 16));
-        
-        JTextField searchField = new JTextField(15);
-        searchField.setFont(new Font("Arial", Font.PLAIN, 14));
-        
-        JButton searchBtn = new JButton("Search");
-        searchBtn.setBackground(new Color(229, 9, 20));
-        searchBtn.setForeground(Color.WHITE);
-        
-        JPanel resultPanel = new JPanel(new GridLayout(0, 1, 10, 10));
-        resultPanel.setBackground(new Color(20, 20, 20));
-        
-        searchBtn.addActionListener(e -> {
-            resultPanel.removeAll();
-            String id = searchField.getText();
-            String response = sendCommand("SEARCH " + id);
-            
-            if(response != null && response.startsWith("MOVIE:")) {
-                String data = response.substring(6);
-                String[] parts = data.split("\\|");
-                if(parts.length >= 6) {
-                    resultPanel.add(createMovieCard(parts[0], parts[1], parts[2], parts[3], parts[4]));
-                }
-            } else {
-                JLabel errorLabel = new JLabel("Movie not found!");
-                errorLabel.setForeground(Color.RED);
-                errorLabel.setFont(new Font("Arial", Font.BOLD, 16));
-                resultPanel.add(errorLabel);
-            }
-            resultPanel.revalidate();
-            resultPanel.repaint();
-        });
-        
-        searchBar.add(searchLabel);
-        searchBar.add(searchField);
-        searchBar.add(searchBtn);
-        
-        panel.add(searchBar, BorderLayout.NORTH);
-        
-        JScrollPane scrollPane = new JScrollPane(resultPanel);
-        scrollPane.getViewport().setBackground(new Color(20, 20, 20));
-        panel.add(scrollPane, BorderLayout.CENTER);
-        
-        // Autocomplete Section
-        JPanel autocompletePanel = new JPanel(new FlowLayout());
-        autocompletePanel.setBackground(new Color(20, 20, 20));
-        
-        JLabel autoLabel = new JLabel("Autocomplete:");
-        autoLabel.setForeground(Color.WHITE);
-        autoLabel.setFont(new Font("Arial", Font.PLAIN, 16));
-        
-        JTextField autoField = new JTextField(15);
-        autoField.setFont(new Font("Arial", Font.PLAIN, 14));
-        
-        JTextArea suggestionsArea = new JTextArea(5, 30);
-        suggestionsArea.setEditable(false);
-        suggestionsArea.setBackground(new Color(40, 40, 40));
-        suggestionsArea.setForeground(Color.WHITE);
-        
-        autoField.addKeyListener(new KeyAdapter() {
-            public void keyReleased(KeyEvent e) {
-                String prefix = autoField.getText();
-                if(prefix.length() > 0) {
-                    String response = sendCommand("AUTOCOMPLETE " + prefix);
-                    if(response != null && response.startsWith("SUGGESTIONS:")) {
-                        String suggestions = response.substring(12).replace("|", "\n");
-                        suggestionsArea.setText(suggestions);
-                    }
-                } else {
-                    suggestionsArea.setText("");
-                }
-            }
-        });
-        
-        autocompletePanel.add(autoLabel);
-        autocompletePanel.add(autoField);
-        panel.add(autocompletePanel, BorderLayout.SOUTH);
-        panel.add(new JScrollPane(suggestionsArea), BorderLayout.EAST);
-        
-        return panel;
-    }
-    
-    private JPanel createHistoryPanel() {
-        JPanel panel = new JPanel(new BorderLayout());
-        panel.setBackground(new Color(20, 20, 20));
-        
-        JLabel header = new JLabel("  📺 Watch History");
-        header.setFont(new Font("Arial", Font.BOLD, 24));
-        header.setForeground(new Color(229, 9, 20));
-        panel.add(header, BorderLayout.NORTH);
-        
-        JPanel historyPanel = new JPanel(new GridLayout(0, 1, 10, 10));
-        historyPanel.setBackground(new Color(20, 20, 20));
-        
-        String response = sendCommand("GETHISTORY " + currentUser);
-        if(response != null && response.startsWith("HISTORY:")) {
-            String data = response.substring(8);
-            if(!data.isEmpty()) {
-                String[] movieIds = data.split("\\|");
-                
-                for(String id : movieIds) {
-                    String movieResponse = sendCommand("SEARCH " + id);
-                    if(movieResponse != null && movieResponse.startsWith("MOVIE:")) {
-                        String movieData = movieResponse.substring(6);
-                        String[] parts = movieData.split("\\|");
-                        if(parts.length >= 5) {
-                            JLabel item = new JLabel("  " + parts[1] + " (" + parts[2] + ")");
-                            item.setFont(new Font("Arial", Font.PLAIN, 16));
-                            item.setForeground(Color.WHITE);
-                            item.setOpaque(true);
-                            item.setBackground(new Color(40, 40, 40));
-                            item.setBorder(BorderFactory.createLineBorder(new Color(100, 100, 100), 1));
-                            historyPanel.add(item);
-                        }
-                    }
-                }
-            } else {
-                JLabel emptyLabel = new JLabel("No watch history yet!");
-                emptyLabel.setForeground(Color.LIGHT_GRAY);
-                emptyLabel.setFont(new Font("Arial", Font.ITALIC, 16));
-                historyPanel.add(emptyLabel);
-            }
-        }
-        
-        JScrollPane scrollPane = new JScrollPane(historyPanel);
-        scrollPane.getViewport().setBackground(new Color(20, 20, 20));
-        panel.add(scrollPane, BorderLayout.CENTER);
-        
-        return panel;
-    }
-    
-    private JPanel createRecommendationsPanel() {
-        JPanel panel = new JPanel(new BorderLayout(10, 10));
-        panel.setBackground(new Color(20, 20, 20));
-        
-        JLabel header = new JLabel("  🎬 Discover by Genre");
-        header.setFont(new Font("Arial", Font.BOLD, 24));
-        header.setForeground(new Color(229, 9, 20));
-        panel.add(header, BorderLayout.NORTH);
-        
-        JPanel genrePanel = new JPanel(new FlowLayout());
-        genrePanel.setBackground(new Color(20, 20, 20));
-        
-        String[] genres = {"Action", "Sci-Fi", "Comedy", "Horror", "Drama", "Romance", "Thriller"};
-        
-        JTextArea resultArea = new JTextArea(10, 40);
-        resultArea.setEditable(false);
-        resultArea.setBackground(new Color(40, 40, 40));
-        resultArea.setForeground(Color.WHITE);
-        resultArea.setFont(new Font("Arial", Font.PLAIN, 14));
-        
-        for(String genre : genres) {
-            JButton genreBtn = new JButton(genre);
-            genreBtn.setBackground(new Color(229, 9, 20));
-            genreBtn.setForeground(Color.WHITE);
-            genreBtn.addActionListener(e -> {
-                String response = sendCommand("RECOMMEND " + genre);
-                if(response != null && response.startsWith("RELATED:")) {
-                    String related = response.substring(8);
-                    resultArea.setText("If you like " + genre + ", try:\n" + related.replace("|", "\n"));
+
+    // ========================================================
+    //  CUSTOM ROW: HEADER BUTTONS + NO SCROLLBAR (SWAP LOGIC)
+    // ========================================================
+    class CategoryPagingRow extends JPanel {
+        private List<MovieData> movies;
+        private int startIndex = 0;
+        private int ITEMS_PER_PAGE = 5; // Exactly 5 movies at a time
+        private JPanel cardsPanel;
+        private JButton nextBtn;
+        private JButton prevBtn;
+
+        public CategoryPagingRow(String title, List<MovieData> data) {
+            this.movies = data;
+            this.setLayout(new BorderLayout());
+            this.setBackground(BG_DARK);
+            this.setMaximumSize(new Dimension(2000, 310));
+            this.setAlignmentX(Component.LEFT_ALIGNMENT);
+
+            // --- 1. HEADER (Title Left, Buttons Right) ---
+            JPanel headerPanel = new JPanel(new BorderLayout());
+            headerPanel.setBackground(BG_DARK);
+            headerPanel.setBorder(new EmptyBorder(0, 5, 0, 30));
+
+            JLabel titleLbl = new JLabel(" " + title);
+            titleLbl.setFont(FONT_HEADER);
+            titleLbl.setForeground(Color.WHITE);
+            headerPanel.add(titleLbl, BorderLayout.WEST);
+
+            // Controls Panel (Buttons)
+            JPanel controls = new JPanel(new FlowLayout(FlowLayout.RIGHT, 10, 0));
+            controls.setBackground(BG_DARK);
+
+            prevBtn = createNavButton("<");
+            nextBtn = createNavButton(">");
+
+            // BACK CLICK
+            prevBtn.addActionListener(e -> {
+                if (startIndex > 0) {
+                    startIndex -= ITEMS_PER_PAGE;
+                    updateCards();
                 }
             });
-            genrePanel.add(genreBtn);
+
+            // NEXT CLICK
+            nextBtn.addActionListener(e -> {
+                if (startIndex + ITEMS_PER_PAGE < movies.size()) {
+                    startIndex += ITEMS_PER_PAGE;
+                    updateCards();
+                }
+            });
+
+            controls.add(prevBtn);
+            controls.add(nextBtn);
+            headerPanel.add(controls, BorderLayout.EAST);
+
+            this.add(headerPanel, BorderLayout.NORTH);
+
+            // --- 2. MOVIES PANEL (NO SCROLLBAR, JUST GRID) ---
+            cardsPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 15, 5));
+            cardsPanel.setBackground(BG_DARK);
+            updateCards(); // Initial Load
+
+            this.add(cardsPanel, BorderLayout.CENTER);
         }
-        
-        panel.add(genrePanel, BorderLayout.CENTER);
-        panel.add(new JScrollPane(resultArea), BorderLayout.SOUTH);
-        
-        return panel;
-    }
-    
-    private void cleanup() {
-        try {
-            if(toBackend != null) {
-                toBackend.write("EXIT\n");
-                toBackend.flush();
-                toBackend.close();
+
+        private void updateCards() {
+            cardsPanel.removeAll();
+            
+            int end = Math.min(startIndex + ITEMS_PER_PAGE, movies.size());
+            for (int i = startIndex; i < end; i++) {
+                cardsPanel.add(createVerticalMovieCard(movies.get(i)));
             }
-            if(fromBackend != null) fromBackend.close();
-            if(cppProcess != null) cppProcess.destroy();
-        } catch(IOException e) {
-            e.printStackTrace();
+            
+            // Toggle Buttons Visibility
+            prevBtn.setVisible(startIndex > 0);
+            nextBtn.setVisible(startIndex + ITEMS_PER_PAGE < movies.size());
+            
+            cardsPanel.revalidate();
+            cardsPanel.repaint();
+        }
+
+        private JButton createNavButton(String text) {
+            JButton btn = new JButton(text);
+            btn.setBackground(new Color(40, 40, 40)); 
+            btn.setForeground(Color.WHITE);
+            btn.setFont(new Font("Segoe UI", Font.BOLD, 14));
+            btn.setFocusPainted(false);
+            btn.setBorder(BorderFactory.createLineBorder(Color.GRAY));
+            btn.setCursor(new Cursor(Cursor.HAND_CURSOR));
+            btn.setPreferredSize(new Dimension(40, 30));
+            return btn;
         }
     }
-    
-    public static void main(String[] args) {
-        SwingUtilities.invokeLater(() -> new FilmForgeGUI());
+
+    private void loadSuggestions() {
+        homeContainer.removeAll();
+        Map<String, Object> data = backend.getSuggestions(currentUser);
+        String genre = (String) data.get("genre");
+        List<MovieData> list = (List<MovieData>) data.get("list");
+        
+        JLabel l = new JLabel("  Recommended (Because you watch " + genre + ")");
+        l.setFont(FONT_HEADER); l.setForeground(Color.WHITE); l.setAlignmentX(Component.LEFT_ALIGNMENT);
+        homeContainer.add(Box.createVerticalStrut(20)); homeContainer.add(l); homeContainer.add(Box.createVerticalStrut(10));
+        
+        JPanel grid = new JPanel(new GridLayout(0, 5, 20, 20));
+        grid.setBackground(BG_DARK); grid.setAlignmentX(Component.LEFT_ALIGNMENT);
+        for(MovieData m : list) grid.add(createVerticalMovieCard(m));
+        
+        homeContainer.add(grid);
+        homeContainer.revalidate(); homeContainer.repaint();
     }
+
+    private JPanel createVerticalMovieCard(MovieData m) {
+        JPanel card = new JPanel(); card.setPreferredSize(new Dimension(180, 260));
+        card.setBackground(BG_CARD); card.setLayout(new BoxLayout(card, BoxLayout.Y_AXIS));
+        card.setBorder(BorderFactory.createLineBorder(new Color(60,60,60), 1));
+        
+        JLabel img = new JLabel("Loading...", SwingConstants.CENTER);
+        img.setPreferredSize(new Dimension(180, 140)); img.setForeground(Color.GRAY);
+        img.setMaximumSize(new Dimension(180, 140)); img.setBackground(Color.BLACK); img.setOpaque(true);
+        
+        new Thread(() -> {
+            try {
+                // Uses Title Hash for unique images
+                int uniqueLock = Math.abs(m.title.hashCode());
+                URL url = new URL("https://loremflickr.com/300/450/movie,cinema?lock=" + uniqueLock);
+                BufferedImage rawImage = ImageIO.read(url);
+                if(rawImage != null) {
+                    Image scaledImage = rawImage.getScaledInstance(180, 140, Image.SCALE_SMOOTH);
+                    ImageIcon icon = new ImageIcon(scaledImage);
+                    SwingUtilities.invokeLater(() -> {
+                        img.setIcon(icon);
+                        img.setText("");
+                    });
+                }
+            } catch(Exception e){
+                 SwingUtilities.invokeLater(() -> img.setText("Error"));
+            }
+        }).start();
+
+        JPanel info = new JPanel(); info.setBackground(BG_CARD); info.setLayout(new BoxLayout(info, BoxLayout.Y_AXIS));
+        info.setBorder(new EmptyBorder(10,10,10,10));
+        
+        JLabel t = new JLabel(m.title.replace("_", " ")); t.setForeground(TEXT_PRIMARY); t.setFont(FONT_CARD_TITLE);
+        t.setAlignmentX(Component.LEFT_ALIGNMENT);
+        JLabel v = new JLabel(m.views + " views"); v.setForeground(TEXT_SECONDARY); v.setFont(FONT_REGULAR);
+        v.setAlignmentX(Component.LEFT_ALIGNMENT);
+        
+        JButton w = new JButton("WATCH"); styleRedButton(w); w.setAlignmentX(Component.LEFT_ALIGNMENT);
+        w.addActionListener(e -> { recordHistory(m.id); playVideo(); });
+
+        info.add(t); info.add(Box.createVerticalStrut(5)); info.add(v); info.add(Box.createVerticalStrut(10)); info.add(w);
+        card.add(img); card.add(info);
+        return card;
+    }
+
+    private void recordHistory(int id) {
+        try(BufferedWriter bw = new BufferedWriter(new FileWriter("history.txt", true))){
+            bw.write(currentUser+" "+id); bw.newLine();
+        }catch(Exception e){}
+    }
+
+    private void updateProfileDisplay() {
+        if(profilePanel == null) return;
+        profilePanel.removeAll();
+        JLabel l = new JLabel("Hi, " + currentUser); l.setForeground(TEXT_PRIMARY); l.setFont(new Font("Segoe UI", Font.BOLD, 14));
+        profilePanel.add(l); profilePanel.revalidate(); profilePanel.repaint();
+    }
+
+    private JButton sideBtn(String t) {
+        JButton b = new JButton(t); b.setMaximumSize(new Dimension(250, 50));
+        b.setBackground(ACCENT_RED); b.setForeground(Color.WHITE); 
+        b.setFont(new Font("Segoe UI", Font.BOLD, 16)); b.setAlignmentX(Component.CENTER_ALIGNMENT);
+        styleRedButton(b);
+        return b;
+    }
+    private void styleField(JTextField f) {
+        f.setBackground(new Color(60,60,60)); f.setForeground(Color.WHITE); f.setCaretColor(Color.WHITE);
+        f.setBorder(BorderFactory.createEmptyBorder(5,10,5,10));
+    }
+    private JPanel createLabeledField(String l, JTextField f) {
+        JPanel p=new JPanel(new BorderLayout()); p.setBackground(BG_DARK);
+        JLabel lbl=new JLabel(l); lbl.setForeground(TEXT_SECONDARY);
+        p.add(lbl, BorderLayout.NORTH); p.add(f, BorderLayout.CENTER); return p;
+    }
+    private void playVideo() {
+        try { Desktop.getDesktop().open(new File(DUMMY_VIDEO_PATH)); }
+        catch(Exception e) { JOptionPane.showMessageDialog(this, "Video File Missing!"); }
+    }
+
+    public static void main(String[] args) { SwingUtilities.invokeLater(() -> new FilmForgeGUI()); }
 }
