@@ -50,3 +50,9 @@ public:
     void display() { inOrder(root); }
 };
 #endif
+//void inOrder(AVLNode* root) {
+   //     if(root) { inOrder(root->left); cout << root->data.id << " " << root->data.title << " " << root->data.genre << " " << root->data.path << " " << root->data.views << endl; inOrder(root->right); }
+    //}
+//public:
+    //void add(Movie m) { root = insert(root, m); }
+    //givoid display() { inOrder(root); }
