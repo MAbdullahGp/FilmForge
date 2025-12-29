@@ -529,7 +529,7 @@ public class FilmForgeGUI extends JFrame {
     }
     private void playVideo() {
         try { Desktop.getDesktop().open(new File(DUMMY_VIDEO_PATH)); }
-        catch(Exception e) { JOptionPane.showMessageDialog(this, "Video File Missing!"); }
+        catch(Exception e) { JOptionPane.showMessageDialog(this, "Error !Video File Missing!"); }
     }
 
     public static void main(String[] args) { SwingUtilities.invokeLater(() -> new FilmForgeGUI()); }
