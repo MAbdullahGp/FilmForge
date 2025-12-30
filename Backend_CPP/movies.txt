@@ -1,0 +1,10 @@
+1|Avengers Endgame|Hollywood|8.9|https://image.tmdb.org/t/p/w200/ulzhLuWrPK07P46e8fQ689zYG5q.jpg
+2|Iron Man|Hollywood|7.9|https://image.tmdb.org/t/p/w200/78lPtwv72eTNqFW9COBYI0dWDJa.jpg
+3|Pathaan|Bollywood|7.5|https://image.tmdb.org/t/p/w200/m1b9ToKDdfUXZdcw6WkLwT2Wj3j.jpg
+4|3 Idiots|Bollywood|9.0|https://image.tmdb.org/t/p/w200/66A9MqXOyTgLCr0kc8PNOj7Cqfk.jpg
+5|Parasite|Korean|8.6|https://image.tmdb.org/t/p/w200/7IiTTgloJzvGI1TAYymCfbfl3vT.jpg
+6|Train to Busan|Korean|8.5|https://image.tmdb.org/t/p/w200/vVpEOvdxVbp2aV166j5Xlvb5Cdc.jpg
+7|RRR|Tollywood|8.2|https://image.tmdb.org/t/p/w200/nEufeZlyAOLqO2brrs0yeF1lgXO.jpg
+8|Bahubali|Tollywood|8.0|https://image.tmdb.org/t/p/w200/9BAjt8nSSms62uOV8XfzblKEzne.jpg
+9|Spider-Man|Hollywood|8.4|https://image.tmdb.org/t/p/w200/rweIrveL43TaxUN0akQEaAXL6x0.jpg
+10|Jawan|Bollywood|7.8|https://image.tmdb.org/t/p/w200/jcdkpX8V5r4xXy1J1rD4g4.jpg
